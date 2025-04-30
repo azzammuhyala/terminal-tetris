@@ -212,28 +212,35 @@ WALL_KICK_OFFSETS = [
     (0, -2)
 ]
 
-class TerminalTetris:
+class Tetris:
+
+    """ Based class for tetris game """
 
     def __init__(self, width, height):
+        if not (
+            isinstance(width, int) and
+            isinstance(height, int) and
+            width >= 8 and
+            height >= 8
+        ):
+            raise Exception('invalid size board of tetris')
+
         self.width = width
         self.height = height
-
-        self.running = True
-        self.clock = pygclock.Clock()
 
         self.reset()
 
     def reset(self):
         self.last_update_time = 0.0
         self.last_held_time = 0.0
-        self.keys_held = {
-            'up': False,
-            'space': False
-        }
+        self.up_key_held = False
+
+        self.hotkey = None
 
         self.locked_position = {}
         self.rotation_offsets = {}
         self.is_change_shape = False
+        self.is_over = False
         self.current_shape = self.get_shape()
         self.next_shape = self.get_shape()
         self.next_shape_position = self.convert_shape_format(self.next_shape)
@@ -266,17 +273,17 @@ class TerminalTetris:
         total_rotation = len(array)
 
         return {
-            (x + c - 2, y + r - 4)
-            for r, line in enumerate(array[rotation % total_rotation])
-            for c, col in enumerate(line) if col == 'X'
+            (x + c, y + r)
+            for r, line in enumerate(array[rotation % total_rotation], start=-4)
+            for c, col in enumerate(line, start=-2) if col == 'X'
         }
 
     def valid_space(self, shape=None):
         accepted_positions = {(c, r) for r in range(self.height) for c in range(self.width) if self.grid[r][c] is None}
-        return all(0 <= pos[0] < self.width and (pos in accepted_positions or pos[1] <= -1) for pos in self.convert_shape_format(shape))
+        return all(0 <= pos[0] < self.width and (pos in accepted_positions or pos[1] < 0) for pos in self.convert_shape_format(shape))
 
     def check_lost(self):
-        return any(y < 1 for _, y in self.locked_position)
+        return any(y <= 0 for _, y in self.locked_position)
 
     def clear_rows(self):
         cleared_rows = [i for i in range(self.height - 1, -1, -1) if None not in self.grid[i]]
@@ -391,7 +398,7 @@ class TerminalTetris:
         shape_position = self.convert_shape_format()
 
         for x, y in shape_position:
-            if y > -1:
+            if y >= 0:
                 self.grid[y][x] = self.current_shape['shape']['color']
 
         self.draw()
@@ -402,10 +409,10 @@ class TerminalTetris:
 
             self.rotation_offsets.clear()
 
+            self.is_change_shape = False
             self.current_shape = self.next_shape
             self.next_shape = self.get_shape()
             self.next_shape_position = self.convert_shape_format(self.next_shape)
-            self.is_change_shape = False
 
             rows_cleared = self.clear_rows()
 
@@ -417,51 +424,51 @@ class TerminalTetris:
 
             self.update_shadow_position(rows_cleared)
 
-    def process_control(self, current_time):
-        keys = (
-            keyboard.is_pressed('left'),  # make current shape move left
-            keyboard.is_pressed('right'), # make current shape move right
-            keyboard.is_pressed('down'),  # make current shape move down
-            keyboard.is_pressed('up'),    # make current shape rotate
-            keyboard.is_pressed('space'), # refresh terminal
-            keyboard.is_pressed('p'),     # pause
-            keyboard.is_pressed('q')      # quit or exit
-        )
+            if self.check_lost():
+                self.is_over = True
 
+    def process_control(self, current_time):
         if self.last_held_time + KEY_INTERVAL <= current_time:
-            if keys[0]:
+            if self.hotkey == 'left':
                 self.left()
                 self.last_held_time = current_time
-            if keys[1]:
+            if self.hotkey == 'right':
                 self.right()
                 self.last_held_time = current_time
-            if keys[2]:
+            if self.hotkey == 'down':
                 self.down()
                 self.last_held_time = current_time
 
-        if keys[3]:
-            if not self.keys_held['up']:
+        if self.hotkey == 'up':
+            if not self.up_key_held:
                 self.rotate()
-                self.keys_held['up'] = True
+                self.up_key_held = True
         else:
-            self.keys_held['up'] = False
+            self.up_key_held = False
 
-        if keys[4]:
-            if not self.keys_held['space']:
-                self.clear_screen(True)
-                self.keys_held['space'] = True
-        else:
-            self.keys_held['space'] = False
+        if self.hotkey:
+            self.hotkey = None
 
-        if keys[5]:
-            self.game_pause()
-
-        if keys[6]:
-            self.running = False
+    def send_hotkey(self, hotkey):
+        self.hotkey = hotkey
 
     def draw(self):
-        self.clear_screen()
+        sys.stderr.write('[WARN] draw() has not been defined\n')
 
+class TerminalTetris(Tetris):
+
+    def __init__(self, width, height):
+        super().__init__(width, height)
+
+        self.running = True
+        self.clock = pygclock.Clock()
+
+    def reset(self):
+        super().reset()
+
+        self.space_key_held = False
+
+    def draw(self):
         current_shape_color = self.current_shape['shape']['color']
         next_shape_color = self.next_shape['shape']['color']
 
@@ -470,9 +477,9 @@ class TerminalTetris:
         string += '\\>\n'
 
         for r in range(self.height):
+            # grid
             string += '<!'
 
-            # grid
             for c in range(self.width):
                 pixel = self.grid[r][c]
 
@@ -504,27 +511,33 @@ class TerminalTetris:
                 string += str(self.width) + 'x' + str(self.height)
                 string += '\x1b[0m'
             elif r == 1:
+                # fps
+                string += '  FPS: \x1b[33m'
+                string += str(int(self.clock.get_fps()))
+                string += '\x1b[0m'
+            elif r == 2:
                 # score
                 string += '  Score: \x1b[32m'
                 string += str(self.score)
                 string += '\x1b[0m'
-            elif r == 2:
+            elif r == 3:
                 # rows cleared
-                string += f'  Rows Cleared: \x1b[35m'
+                string += '  Rows Cleared: \x1b[35m'
                 string += str(self.rows_cleared)
                 string += '\x1b[0m'
 
             # next piece
-            elif r == 3:
+            elif r == 4:
                 string += '  Next:'
-            elif r in (4, 10):
+            elif r in (5, 11):
                 string += '    <!'
                 string += '*' * 10
                 string += '!>'
-            elif 5 <= r <= 9:
+            elif 6 <= r <= 10:
                 string += '    <!'
-                for c in range(-2, 3):
-                    if (c + self.next_shape['x'], r - 9) in self.next_shape_position:
+                offset_x = self.next_shape['x']
+                for c in range(-2 + offset_x, 3 + offset_x):
+                    if (c, r - 10) in self.next_shape_position:
                         string += f'\x1b[38;2;'
                         string += str(next_shape_color[0]) + ';'
                         string += str(next_shape_color[1]) + ';'
@@ -536,9 +549,9 @@ class TerminalTetris:
                 string += '!>'
 
             # license
-            elif r == 12:
-                string += '     \x1b[90mMIT  License\x1b[0m'
             elif r == 13:
+                string += '     \x1b[90mMIT  License\x1b[0m'
+            elif r == 14:
                 string += '    \x1b[90mAzzam  Muhyala\x1b[0m'
 
             string += '\n'
@@ -548,9 +561,12 @@ class TerminalTetris:
         string += '!>\n  '
 
         string += '\\/' * self.width
-        string += '  \n'
+        string += '  '
+
+        self.clear_screen()
 
         sys.stdout.write(string)
+        sys.stdout.flush()
 
     def clear_screen(self, refresh=False):
         if refresh:
@@ -562,30 +578,40 @@ class TerminalTetris:
     def game_pause(self):
         self.clear_screen(True)
 
-        sys.stdout.write("\x1b[34mGAME PAUSED - PRESS ENTER TO CONTINUE...\x1b[0m")
+        sys.stdout.write("\x1b[34mGAME PAUSED - PRESS ENTER TO CONTINUE, 'R' TO RESTART, OR 'Q' TO QUIT\x1b[0m")
         sys.stdout.flush()
 
         while True:
             key = ord(getch.getch())
 
             if key == 13:
-                self.clear_screen(True)
                 break
+
+            elif key == 114:
+                self.reset()
+                break
+
+            elif key == 113:
+                self.draw()
+                self.running = False
+                break
+
+        self.clear_screen(True)
 
     def game_over(self):
         self.clear_screen(True)
         self.draw()
 
-        sys.stdout.write('\x1b[31mOh no! You lose! :(\x1b[0m\n')
-        sys.stdout.write("\x1b[34mPRESS ENTER TO RESTART GAME OR 'Q' TO QUIT...\x1b[0m")
+        sys.stdout.write('\n\x1b[31mOh no! You lose! :(\x1b[0m\n')
+        sys.stdout.write("\x1b[34mPRESS ENTER TO RESTART OR 'Q' TO QUIT\x1b[0m")
         sys.stdout.flush()
 
         while True:
             key = ord(getch.getch())
 
             if key == 13:
-                self.reset()
                 self.clear_screen(True)
+                self.reset()
                 break
 
             elif key == 113:
@@ -602,10 +628,36 @@ class TerminalTetris:
             while self.running:
                 self.clock.tick(TICK_FRAME)
 
+                keys = {
+                    'left': keyboard.is_pressed('left'),   # make current shape move left
+                    'right': keyboard.is_pressed('right'), # make current shape move right
+                    'down': keyboard.is_pressed('down'),   # make current shape move down
+                    'up': keyboard.is_pressed('up'),       # make current shape rotate
+                    'space': keyboard.is_pressed('space'), # refresh terminal
+                    'p': keyboard.is_pressed('p'),         # pause
+                    'q': keyboard.is_pressed('q')          # quit or exit
+                }
+
+                self.send_hotkey(next((k for k, v in keys.items() if v), None))
+
+                if keys['space']:
+                    if not self.space_key_held:
+                        self.clear_screen(True)
+                        self.space_key_held = True
+                else:
+                    self.space_key_held = False
+
+                if keys['p']:
+                    self.game_pause()
+
+                if keys['q']:
+                    self.running = False
+
                 self.update()
 
-                if self.check_lost():
+                if self.is_over:
                     self.game_over()
+
         finally:
             sys.stdout.write('\x1b[?25h')
             sys.stdout.flush()
